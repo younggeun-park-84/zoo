@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 /** 한 사다리 가로줄: row 높이의 col 번째 세로줄과 col+1 세로줄을 연결 */
 type Rung = { row: number; col: number };
@@ -63,6 +63,59 @@ function tracePath(startCol: number, rungs: Rung[]): { points: Point[]; endCol: 
   return { points, endCol: col };
 }
 
+/** 결과 텍스트가 '당첨'을 포함하면 당첨으로 간주 */
+function isWin(text: string | undefined): boolean {
+  return !!text && text.includes("당첨");
+}
+
+const CONFETTI_COLORS = [
+  "#ef4444", "#f59e0b", "#10b981", "#3b82f6",
+  "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#facc15",
+];
+
+/** 당첨 시 화면 가득 떨어지는 폭죽(색종이) 효과 — 외부 라이브러리 없이 CSS로 구현 */
+function Confetti() {
+  const pieces = useMemo(
+    () =>
+      Array.from({ length: 120 }, (_, i) => ({
+        i,
+        left: Math.random() * 100,
+        size: 6 + Math.random() * 8,
+        duration: 2.5 + Math.random() * 1.8,
+        delay: Math.random() * 0.6,
+        drift: (Math.random() * 2 - 1) * 30,
+        spin: 360 + Math.random() * 720,
+        color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+        round: Math.random() < 0.4,
+      })),
+    [],
+  );
+
+  return (
+    <div className="confetti-root" aria-hidden="true">
+      {pieces.map((p) => (
+        <span
+          key={p.i}
+          className="confetti-piece"
+          style={
+            {
+              left: `${p.left}vw`,
+              width: `${p.size}px`,
+              height: `${p.size * (p.round ? 1 : 1.6)}px`,
+              backgroundColor: p.color,
+              borderRadius: p.round ? "9999px" : "2px",
+              animationDuration: `${p.duration}s`,
+              animationDelay: `${p.delay}s`,
+              "--drift": `${p.drift}vw`,
+              "--spin": `${p.spin}deg`,
+            } as CSSProperties
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function Ladder() {
   const [numPlayers, setNumPlayers] = useState(4);
   const [names, setNames] = useState<string[]>(["", "", "", ""]);
@@ -73,12 +126,23 @@ export default function Ladder() {
   // 결과 공개 여부: startCol -> endCol
   const [revealed, setRevealed] = useState<Record<number, number>>({});
   const [running, setRunning] = useState(false);
+  // 당첨 폭죽 효과
+  const [celebrate, setCelebrate] = useState(false);
+  const [confettiKey, setConfettiKey] = useState(0);
 
   const timeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const clearTimers = useCallback(() => {
     timeouts.current.forEach(clearTimeout);
     timeouts.current = [];
+  }, []);
+
+  // 폭죽을 새로 터뜨리고 약 3.5초 뒤 자동 정리
+  const fireConfetti = useCallback(() => {
+    setConfettiKey((k) => k + 1);
+    setCelebrate(true);
+    const t = setTimeout(() => setCelebrate(false), 3500);
+    timeouts.current.push(t);
   }, []);
 
   // 사다리 새로 생성 (클라이언트에서만 — SSR 하이드레이션 불일치 방지)
@@ -156,10 +220,11 @@ export default function Ladder() {
       });
       const t = setTimeout(() => {
         setRevealed((prev) => ({ ...prev, [startCol]: endCol }));
+        if (isWin(results[endCol])) fireConfetti();
       }, 1400);
       timeouts.current.push(t);
     },
-    [rungs, running, activePaths],
+    [rungs, running, activePaths, results, fireConfetti],
   );
 
   const runAll = useCallback(() => {
@@ -174,9 +239,14 @@ export default function Ladder() {
     }
     setActivePaths(paths);
     setRevealed({});
-    const t = setTimeout(() => setRevealed(ends), 1500);
+    const t = setTimeout(() => {
+      setRevealed(ends);
+      if (Object.values(ends).some((endCol) => isWin(results[endCol]))) {
+        fireConfetti();
+      }
+    }, 1500);
     timeouts.current.push(t);
-  }, [numPlayers, rungs, clearTimers]);
+  }, [numPlayers, rungs, clearTimers, results, fireConfetti]);
 
   const reset = () => {
     clearTimers();
@@ -189,6 +259,7 @@ export default function Ladder() {
 
   return (
     <div className="w-full max-w-3xl">
+      {celebrate && <Confetti key={confettiKey} />}
       {/* 컨트롤 바 */}
       <div className="mb-6 flex flex-wrap items-center justify-center gap-3">
         <div className="flex items-center gap-2 rounded-full bg-white/70 px-2 py-1 shadow-sm ring-1 ring-black/5 dark:bg-white/10 dark:ring-white/10">
@@ -396,6 +467,29 @@ export default function Ladder() {
         }
         @keyframes ladder-draw {
           to { stroke-dashoffset: 0; }
+        }
+        .confetti-root {
+          position: fixed;
+          inset: 0;
+          pointer-events: none;
+          overflow: hidden;
+          z-index: 50;
+        }
+        .confetti-piece {
+          position: absolute;
+          top: -10vh;
+          will-change: transform, opacity;
+          animation-name: confetti-fall;
+          animation-timing-function: cubic-bezier(0.25, 0.6, 0.55, 1);
+          animation-fill-mode: forwards;
+        }
+        @keyframes confetti-fall {
+          0%   { transform: translate3d(0, -10vh, 0) rotateZ(0deg); opacity: 1; }
+          85%  { opacity: 1; }
+          100% { transform: translate3d(var(--drift), 110vh, 0) rotateZ(var(--spin)); opacity: 0; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .confetti-piece { display: none; }
         }
       `}</style>
     </div>
